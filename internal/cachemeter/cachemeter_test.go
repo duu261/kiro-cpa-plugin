@@ -253,9 +253,6 @@ func TestMemoryBound(t *testing.T) {
 	if len(m.entries) > maxEntries {
 		t.Fatalf("entries %d exceed bound %d", len(m.entries), maxEntries)
 	}
-	if len(m.entries) >= maxEntries+20 {
-		t.Fatalf("prune never ran: %d entries", len(m.entries))
-	}
 	long := make([][32]byte, maxEntries+5)
 	for i := range long {
 		long[i] = [32]byte{9, byte(i), byte(i >> 8), byte(i >> 16)}
