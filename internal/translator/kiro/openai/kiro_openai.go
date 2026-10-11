@@ -148,14 +148,7 @@ func ConvertKiroStreamToOpenAI(ctx context.Context, model string, originalReques
 
 		// Extract usage if present
 		if eventJSON.Get("usage").Exists() {
-			inputTokens := eventJSON.Get("usage.input_tokens").Int()
-			outputTokens := eventJSON.Get("usage.output_tokens").Int()
-			usageInfo := usage.Detail{
-				InputTokens:  inputTokens,
-				OutputTokens: outputTokens,
-				TotalTokens:  inputTokens + outputTokens,
-			}
-			chunk := BuildOpenAISSEUsage(state, usageInfo)
+			chunk := BuildOpenAISSEUsage(state, usageFromClaude(eventJSON.Get("usage")))
 			results = append(results, chunk)
 		}
 
@@ -233,11 +226,7 @@ func ConvertKiroNonStreamToOpenAI(ctx context.Context, model string, originalReq
 	}
 
 	// Extract usage
-	usageInfo := usage.Detail{
-		InputTokens:  response.Get("usage.input_tokens").Int(),
-		OutputTokens: response.Get("usage.output_tokens").Int(),
-	}
-	usageInfo.TotalTokens = usageInfo.InputTokens + usageInfo.OutputTokens
+	usageInfo := usageFromClaude(response.Get("usage"))
 
 	// Build OpenAI response with reasoning_content support
 	openaiResponse := BuildOpenAIResponseWithReasoning(content, reasoningContent, toolUses, model, usageInfo, stopReason)

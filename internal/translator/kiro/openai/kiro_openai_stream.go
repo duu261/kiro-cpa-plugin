@@ -141,11 +141,7 @@ func BuildOpenAISSEUsage(state *OpenAIStreamState, usageInfo usage.Detail) strin
 		"created": state.Created,
 		"model":   state.Model,
 		"choices": []map[string]interface{}{},
-		"usage": map[string]interface{}{
-			"prompt_tokens":     usageInfo.InputTokens,
-			"completion_tokens": usageInfo.OutputTokens,
-			"total_tokens":      usageInfo.InputTokens + usageInfo.OutputTokens,
-		},
+		"usage":   openAIUsage(usageInfo),
 	}
 	result, _ := json.Marshal(chunk)
 	return FormatSSEEvent(result)

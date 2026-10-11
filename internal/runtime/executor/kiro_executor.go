@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	kiroauth "github.com/nguyenha935/kiro-cpa-plugin/internal/auth/kiro"
+	"github.com/nguyenha935/kiro-cpa-plugin/internal/cachemeter"
 	"github.com/nguyenha935/kiro-cpa-plugin/internal/kiroroute"
 	"github.com/nguyenha935/kiro-cpa-plugin/internal/modelcapabilities"
 	kiroclaude "github.com/nguyenha935/kiro-cpa-plugin/internal/translator/kiro/claude"
@@ -959,6 +960,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 
 		appendAPIResponseChunk(ctx, e.cfg, []byte(content))
 		usageInfo = completeKiroUsage(usageInfo, contextPercentage, kiroContextWindow(auth, kiroModelID), content, reasoning, toolUses)
+		usageInfo = cachemeter.Apply(tokenKey, kiroModelID, body, usageInfo)
 
 		// Build response in Claude format for Kiro translator
 		// stopReason is extracted from upstream response by parseEventStream
@@ -1216,7 +1218,7 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 			if len(bytes.TrimSpace(requestPayload)) == 0 {
 				requestPayload = req.Payload
 			}
-			if e.streamToChannelWithAliases(withStreamTraceLabel(ctx, authID), resp.Body, out, from, payloadRequestedModel(opts, req.Model), requestPayload, body, kiroContextWindow(auth, kiroModelID), aliases) {
+			if e.streamToChannelWithAliases(withCacheMeter(withStreamTraceLabel(ctx, authID), tokenKey, kiroModelID, body), resp.Body, out, from, payloadRequestedModel(opts, req.Model), requestPayload, body, kiroContextWindow(auth, kiroModelID), aliases) {
 				log.Debugf("kiro: stream completed successfully for token %s", tokenKey)
 			}
 		}(httpResp)
@@ -2898,6 +2900,7 @@ func (e *KiroExecutor) streamToChannelWithAliases(ctx context.Context, body io.R
 	}
 
 	totalUsage = completeKiroUsageFromText(totalUsage, upstreamContextPercentage, contextWindow, outputForUsage.String())
+	totalUsage = applyCacheMeter(ctx, totalUsage)
 
 	// Log upstream usage information if received
 	if hasUpstreamUsage {

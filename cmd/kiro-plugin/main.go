@@ -62,6 +62,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	kiroauth "github.com/nguyenha935/kiro-cpa-plugin/internal/auth/kiro"
+	"github.com/nguyenha935/kiro-cpa-plugin/internal/cachemeter"
 	"github.com/nguyenha935/kiro-cpa-plugin/internal/kiroroute"
 	"github.com/nguyenha935/kiro-cpa-plugin/internal/modelcapabilities"
 	kiroexecutor "github.com/nguyenha935/kiro-cpa-plugin/internal/runtime/executor"
@@ -367,6 +368,7 @@ func configurePlugin(raw []byte) {
 	var req lifecycleRequest
 	if json.Unmarshal(raw, &req) != nil || len(req.ConfigYAML) == 0 {
 		kiroauth.ConfigureGlobalRateLimiter(pluginSettings.rateLimiterConfig())
+		cachemeter.Configure(pluginSettings.cacheMeterConfig())
 		return
 	}
 	syncLogLevel(req.ConfigYAML)
@@ -406,6 +408,7 @@ func configurePlugin(raw []byte) {
 	}
 	pluginSettings = next.normalized()
 	kiroauth.ConfigureGlobalRateLimiter(pluginSettings.rateLimiterConfig())
+	cachemeter.Configure(pluginSettings.cacheMeterConfig())
 }
 
 // mergePluginSettings overlays only the fields the host actually set, treating
@@ -421,6 +424,12 @@ func mergePluginSettings(base, update pluginSettingsData) pluginSettingsData {
 	}
 	if update.SuspendCooldown != "" {
 		base.SuspendCooldown = update.SuspendCooldown
+	}
+	if update.CacheMetering != "" {
+		base.CacheMetering = update.CacheMetering
+	}
+	if update.CacheReadRatio != "" {
+		base.CacheReadRatio = update.CacheReadRatio
 	}
 	return base
 }
