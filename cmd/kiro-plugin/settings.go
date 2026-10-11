@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -14,15 +15,16 @@ type pluginSettingsData struct {
 	MinTokenInterval string `yaml:"min_token_interval"`
 	MaxTokenInterval string `yaml:"max_token_interval"`
 	SuspendCooldown  string `yaml:"suspend_cooldown"`
-	// CacheMetering and CacheReadRatio are strings so that an absent key stays
+	// CacheMetering and the ratios are strings so that an absent key stays
 	// distinguishable from false/0 under the merge rule below.
-	CacheMetering  string `yaml:"cache_metering"`
-	CacheReadRatio string `yaml:"cache_read_ratio"`
+	CacheMetering   string `yaml:"cache_metering"`
+	CacheReadRatio  string `yaml:"cache_read_ratio"`
+	CacheWriteRatio string `yaml:"cache_write_ratio"`
 }
 
 func (s pluginSettingsData) isZero() bool {
 	return s.MinTokenInterval == "" && s.MaxTokenInterval == "" && s.SuspendCooldown == "" &&
-		s.CacheMetering == "" && s.CacheReadRatio == ""
+		s.CacheMetering == "" && s.CacheReadRatio == "" && s.CacheWriteRatio == ""
 }
 
 func defaultPluginSettings() pluginSettingsData {
@@ -32,6 +34,7 @@ func defaultPluginSettings() pluginSettingsData {
 		SuspendCooldown:  kiroauth.DefaultSuspendCooldown.String(),
 		CacheMetering:    "false",
 		CacheReadRatio:   strconv.FormatFloat(cachemeter.DefaultReadRatio, 'f', -1, 64),
+		CacheWriteRatio:  strconv.FormatFloat(cachemeter.DefaultWriteRatio, 'f', -1, 64),
 	}
 }
 
@@ -55,12 +58,17 @@ func (s pluginSettingsData) normalized() pluginSettingsData {
 	} else {
 		s.CacheMetering = strconv.FormatBool(enabled)
 	}
-	if ratio, err := strconv.ParseFloat(strings.TrimSpace(s.CacheReadRatio), 64); err != nil || ratio <= 0 || ratio > 1 {
-		s.CacheReadRatio = defaults.CacheReadRatio
-	} else {
-		s.CacheReadRatio = strconv.FormatFloat(ratio, 'f', -1, 64)
-	}
+	s.CacheReadRatio = normalizedRatio(s.CacheReadRatio, defaults.CacheReadRatio)
+	s.CacheWriteRatio = normalizedRatio(s.CacheWriteRatio, defaults.CacheWriteRatio)
 	return s
+}
+
+func normalizedRatio(raw, fallback string) string {
+	ratio, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(ratio) || ratio <= 0 || ratio > 1 {
+		return fallback
+	}
+	return strconv.FormatFloat(ratio, 'f', -1, 64)
 }
 
 func (s pluginSettingsData) rateLimiterConfig() kiroauth.RateLimiterConfig {
@@ -78,8 +86,9 @@ func (s pluginSettingsData) rateLimiterConfig() kiroauth.RateLimiterConfig {
 func (s pluginSettingsData) cacheMeterConfig() cachemeter.Config {
 	s = s.normalized()
 	enabled, _ := strconv.ParseBool(s.CacheMetering)
-	ratio, _ := strconv.ParseFloat(s.CacheReadRatio, 64)
-	return cachemeter.Config{Enabled: enabled, ReadRatio: ratio}
+	read, _ := strconv.ParseFloat(s.CacheReadRatio, 64)
+	write, _ := strconv.ParseFloat(s.CacheWriteRatio, 64)
+	return cachemeter.Config{Enabled: enabled, ReadRatio: read, WriteRatio: write}
 }
 
 func pluginConfigFields() []pluginapi.ConfigField {
@@ -88,6 +97,7 @@ func pluginConfigFields() []pluginapi.ConfigField {
 		{Name: "max_token_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Maximum jittered delay between requests for one credential. Default: 2s."},
 		{Name: "suspend_cooldown", Type: pluginapi.ConfigFieldTypeString, Description: "How long a credential stays out of rotation after Kiro reports it suspended. Default: 1h."},
 		{Name: "cache_metering", Type: pluginapi.ConfigFieldTypeString, Description: "Report Anthropic-style simulated prompt-cache usage for Claude models (true/false). Kiro is called the same way either way. Default: false."},
-		{Name: "cache_read_ratio", Type: pluginapi.ConfigFieldTypeString, Description: "Highest share of the prompt reported as cache read when cache_metering is on, 0 to 1. Default: 0.8."},
+		{Name: "cache_read_ratio", Type: pluginapi.ConfigFieldTypeString, Description: "On a cache hit, highest share of the prompt reported as cache read, 0 to 1; the rest is uncached input. Default: 0.88."},
+		{Name: "cache_write_ratio", Type: pluginapi.ConfigFieldTypeString, Description: "On a cache miss, share of the prompt reported as cache write, 0 to 1; the rest is uncached input. Default: 0.88."},
 	}
 }

@@ -2,6 +2,7 @@ package cachemeter
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func conversation(t *testing.T, turns int) []byte {
 }
 
 func newTestMeter(ratio float64) (*Meter, *time.Time) {
-	m := New(Config{Enabled: true, ReadRatio: ratio})
+	m := New(Config{Enabled: true, ReadRatio: ratio, WriteRatio: 0.88})
 	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 	m.now = func() time.Time { return now }
 	return m, &now
@@ -54,10 +55,11 @@ func detailFor(promptTokens int64) usage.Detail {
 
 func sum(d usage.Detail) int64 { return d.InputTokens + d.CacheReadTokens + d.CacheCreationTokens }
 
-func TestFirstTurnIsAllWrite(t *testing.T) {
-	m, _ := newTestMeter(0.8)
+// A miss writes 88% and bills the rest as plain input, never reads.
+func TestFirstTurnWritesWithInputSlice(t *testing.T) {
+	m, _ := newTestMeter(0.88)
 	got := m.Apply("cred", model, conversation(t, 1), detailFor(20000))
-	if got.CacheReadTokens != 0 || got.CacheCreationTokens != 19999 || got.InputTokens != 1 {
+	if got.CacheReadTokens != 0 || got.CacheCreationTokens != 17600 || got.InputTokens != 2400 {
 		t.Fatalf("first turn = %+v", got)
 	}
 	if sum(got) != 20000 {
@@ -68,12 +70,13 @@ func TestFirstTurnIsAllWrite(t *testing.T) {
 	}
 }
 
+// A hit reads up to the ratio and bills the rest as plain input, never writes.
 func TestIdenticalRepeatIsCappedRead(t *testing.T) {
-	m, _ := newTestMeter(0.8)
+	m, _ := newTestMeter(0.88)
 	req := conversation(t, 1)
 	m.Apply("cred", model, req, detailFor(20000))
 	got := m.Apply("cred", model, req, detailFor(20000))
-	if got.CacheReadTokens != 16000 || got.CacheCreationTokens != 3999 || got.InputTokens != 1 || sum(got) != 20000 {
+	if got.CacheReadTokens != 17600 || got.CacheCreationTokens != 0 || got.InputTokens != 2400 || sum(got) != 20000 {
 		t.Fatalf("repeat = %+v", got)
 	}
 	if got.CachedTokens != got.CacheReadTokens {
@@ -89,7 +92,7 @@ func TestNextTurnReadsPreviousPrefix(t *testing.T) {
 	if share < 0.55 || share > 0.75 {
 		t.Fatalf("turn 3 read share %.3f, want about 2/3 of the prompt: %+v", share, got)
 	}
-	if sum(got) != 45000 || got.InputTokens != 1 {
+	if sum(got) != 45000 || got.CacheCreationTokens != 0 || got.InputTokens != 45000-got.CacheReadTokens {
 		t.Fatalf("turn 3 = %+v", got)
 	}
 }
@@ -157,11 +160,11 @@ func TestVolatileFieldsDoNotBreakPrefix(t *testing.T) {
 }
 
 func TestShortPrefixIsNotCached(t *testing.T) {
-	m, _ := newTestMeter(0.8)
+	m, _ := newTestMeter(0.88)
 	req := body(t, map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}})
 	m.Apply("cred", model, req, detailFor(30))
-	if got := m.Apply("cred", model, req, detailFor(30)); got.CacheReadTokens != 0 {
-		t.Fatalf("prefix under the minimum was read: %+v", got)
+	if got := m.Apply("cred", model, req, detailFor(30)); got.CacheReadTokens != 0 || got.CacheCreationTokens != 0 || got.InputTokens != 30 {
+		t.Fatalf("prompt under the minimum not billed as plain input: %+v", got)
 	}
 }
 
@@ -193,29 +196,31 @@ func TestUnknownClaudeModelKeepsFullTotal(t *testing.T) {
 func TestSplit(t *testing.T) {
 	cases := []struct {
 		total             int64
-		share, ratio      float64
+		share, rr, wr     float64
 		read, write, inpt int64
 	}{
-		{1000, 0, 0.8, 0, 999, 1},
-		{1000, 1, 0.8, 800, 199, 1},
-		{1000, 0.5, 0.8, 500, 499, 1},
-		{1000, 1, 1, 1000, 0, 0},
-		{1, 0, 0.8, 0, 0, 1},
-		{0, 1, 0.8, 0, 0, 0},
+		{10000, 0, 0.88, 0.88, 0, 8800, 1200},   // miss: write + input slice
+		{10000, 1, 0.88, 0.88, 8800, 0, 1200},   // full hit capped at read ratio
+		{10000, 0.5, 0.88, 0.88, 5000, 0, 5000}, // partial hit: uncached suffix is input
+		{10000, 1, 1, 1, 10000, 0, 0},
+		{10000, 0, 0.88, 1, 0, 10000, 0},
+		{1023, 1, 0.88, 0.88, 0, 0, 1023}, // under the cacheable minimum
+		{1, 0, 0.88, 0.88, 0, 0, 1},
+		{0, 1, 0.88, 0.88, 0, 0, 0},
 	}
 	for _, c := range cases {
-		r, w, i := Split(c.total, c.share, c.ratio)
-		if r != c.read || w != c.write || i != c.inpt || (c.total > 0 && r+w+i != c.total) {
-			t.Fatalf("Split(%d,%v,%v) = %d/%d/%d, want %d/%d/%d", c.total, c.share, c.ratio, r, w, i, c.read, c.write, c.inpt)
+		r, w, i := Split(c.total, c.share, c.rr, c.wr)
+		if r != c.read || w != c.write || i != c.inpt || (c.total > 0 && r+w+i != c.total) || (r > 0 && w > 0) {
+			t.Fatalf("Split(%d,%v,%v,%v) = %d/%d/%d, want %d/%d/%d", c.total, c.share, c.rr, c.wr, r, w, i, c.read, c.write, c.inpt)
 		}
 	}
 }
 
 func TestConfigureRejectsBadRatio(t *testing.T) {
-	for _, r := range []float64{0, -1, 1.5} {
-		m := New(Config{Enabled: true, ReadRatio: r})
-		if m.cfg.ReadRatio != DefaultReadRatio {
-			t.Fatalf("ratio %v kept as %v", r, m.cfg.ReadRatio)
+	for _, r := range []float64{0, -1, 1.5, math.NaN()} {
+		m := New(Config{Enabled: true, ReadRatio: r, WriteRatio: r})
+		if m.cfg.ReadRatio != DefaultReadRatio || m.cfg.WriteRatio != DefaultWriteRatio {
+			t.Fatalf("ratio %v kept as %v/%v", r, m.cfg.ReadRatio, m.cfg.WriteRatio)
 		}
 	}
 }
@@ -240,7 +245,7 @@ func TestOpenAIBodiesAreMetered(t *testing.T) {
 		map[string]any{"role": "user", "content": longText("u")},
 	}})
 	m.Apply("cred", model, req, detailFor(20000))
-	if got := m.Apply("cred", model, req, detailFor(20000)); got.CacheReadTokens != 16000 {
+	if got := m.Apply("cred", model, req, detailFor(20000)); got.CacheReadTokens != 16000 || got.InputTokens != 4000 {
 		t.Fatalf("OpenAI chat body not metered: %+v", got)
 	}
 }

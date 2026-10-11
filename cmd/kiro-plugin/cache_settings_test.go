@@ -10,9 +10,9 @@ func TestConfigurePluginReadsCacheMeterSettings(t *testing.T) {
 	defer func() { pluginSettings = original }()
 	pluginSettings = testPluginSettings
 
-	configurePlugin(configureRequest("plugins:\n  configs:\n    kiro-ha:\n      enabled: true\n      priority: 1\n      cache_metering: true\n      cache_read_ratio: 0.95\n"))
+	configurePlugin(configureRequest("plugins:\n  configs:\n    kiro-ha:\n      enabled: true\n      priority: 1\n      cache_metering: true\n      cache_read_ratio: 0.95\n      cache_write_ratio: \"0.85\"\n"))
 	cfg := pluginSettings.cacheMeterConfig()
-	if !cfg.Enabled || cfg.ReadRatio != 0.95 {
+	if !cfg.Enabled || cfg.ReadRatio != 0.95 || cfg.WriteRatio != 0.85 {
 		t.Fatalf("cache meter config = %+v from %#v", cfg, pluginSettings)
 	}
 	if pluginSettings.MinTokenInterval != "3s" || pluginSettings.SuspendCooldown != "2h" {
@@ -20,7 +20,7 @@ func TestConfigurePluginReadsCacheMeterSettings(t *testing.T) {
 	}
 
 	configurePlugin(configureRequest("plugins:\n  configs:\n    kiro-ha:\n      min_token_interval: 4s\n"))
-	if cfg := pluginSettings.cacheMeterConfig(); !cfg.Enabled || cfg.ReadRatio != 0.95 {
+	if cfg := pluginSettings.cacheMeterConfig(); !cfg.Enabled || cfg.ReadRatio != 0.95 || cfg.WriteRatio != 0.85 {
 		t.Fatalf("unrelated reconfigure dropped cache settings: %+v", cfg)
 	}
 
@@ -31,14 +31,15 @@ func TestConfigurePluginReadsCacheMeterSettings(t *testing.T) {
 }
 
 func TestCacheMeterDefaultsOffAndRejectsBadRatio(t *testing.T) {
-	if cfg := defaultPluginSettings().cacheMeterConfig(); cfg.Enabled || cfg.ReadRatio != 0.8 {
+	if cfg := defaultPluginSettings().cacheMeterConfig(); cfg.Enabled || cfg.ReadRatio != 0.88 || cfg.WriteRatio != 0.88 {
 		t.Fatalf("defaults = %+v", cfg)
 	}
-	for _, bad := range []string{"0", "-0.2", "1.5", "abc"} {
+	for _, bad := range []string{"0", "-0.2", "1.5", "abc", "NaN"} {
 		s := defaultPluginSettings()
 		s.CacheReadRatio = bad
-		if cfg := s.cacheMeterConfig(); cfg.ReadRatio != 0.8 {
-			t.Fatalf("ratio %q accepted as %v", bad, cfg.ReadRatio)
+		s.CacheWriteRatio = bad
+		if cfg := s.cacheMeterConfig(); cfg.ReadRatio != 0.88 || cfg.WriteRatio != 0.88 {
+			t.Fatalf("ratio %q accepted as %v/%v", bad, cfg.ReadRatio, cfg.WriteRatio)
 		}
 	}
 	s := defaultPluginSettings()

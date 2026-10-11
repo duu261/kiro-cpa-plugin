@@ -34,7 +34,7 @@ func meterRequest(format string, stream bool) (cliproxyexecutor.Request, cliprox
 
 func setupMeterTest(t *testing.T, authID string) {
 	t.Helper()
-	cachemeter.Configure(cachemeter.Config{Enabled: true, ReadRatio: 0.8})
+	cachemeter.Configure(cachemeter.Config{Enabled: true, ReadRatio: 0.88, WriteRatio: 0.88})
 	t.Cleanup(func() { cachemeter.Configure(cachemeter.Config{}) })
 	modelcapabilities.ReplaceForAuth(authID, []modelcapabilities.Capability{{ModelID: "claude-opus-5.5", InputTokenLimit: meterWindow}})
 	t.Cleanup(func() { modelcapabilities.ReplaceForAuth(authID, nil) })
@@ -50,13 +50,16 @@ func setupMeterTest(t *testing.T, authID string) {
 
 func wantPrompt() int64 { return 45000 - estimateKiroTokens("hello") - 6690 }
 
-// Claude clients: the first turn is all cache write, the identical second
-// turn reads 80% of the prompt, and read+write+input equals the real prompt.
+func ratioOf(prompt int64) int64 { return int64(float64(prompt) * 0.88) }
+
+// Claude clients: the first turn writes 88% of the prompt, the identical
+// second turn reads 88%, the rest is plain input, and read+write+input equals
+// the real prompt.
 func TestCacheMeterClaudeNonStream(t *testing.T) {
 	auth := builderIDAuth("meter-claude.json")
 	setupMeterTest(t, auth.ID)
 	prompt := wantPrompt()
-	for turn, wantRead := range []int64{0, int64(float64(prompt) * 0.8)} {
+	for turn, want := range [][2]int64{{0, ratioOf(prompt)}, {ratioOf(prompt), 0}} {
 		req, opts := meterRequest("claude", false)
 		resp, err := NewKiroExecutor(nil).Execute(t.Context(), auth, req, opts)
 		if err != nil {
@@ -64,8 +67,8 @@ func TestCacheMeterClaudeNonStream(t *testing.T) {
 		}
 		u := gjson.GetBytes(resp.Payload, "usage")
 		read, write, input := u.Get("cache_read_input_tokens").Int(), u.Get("cache_creation_input_tokens").Int(), u.Get("input_tokens").Int()
-		if read != wantRead || read+write+input != prompt || input != 1 {
-			t.Fatalf("turn %d usage %s, want read %d of prompt %d", turn+1, u.Raw, wantRead, prompt)
+		if read != want[0] || write != want[1] || read+write+input != prompt {
+			t.Fatalf("turn %d usage %s, want read %d write %d of prompt %d", turn+1, u.Raw, want[0], want[1], prompt)
 		}
 		if u.Get("cache_creation.ephemeral_5m_input_tokens").Int() != write {
 			t.Fatalf("turn %d 5m write breakdown missing: %s", turn+1, u.Raw)
@@ -77,7 +80,7 @@ func TestCacheMeterClaudeStream(t *testing.T) {
 	auth := builderIDAuth("meter-claude-stream.json")
 	setupMeterTest(t, auth.ID)
 	prompt := wantPrompt()
-	for turn, wantRead := range []int64{0, int64(float64(prompt) * 0.8)} {
+	for turn, want := range [][2]int64{{0, ratioOf(prompt)}, {ratioOf(prompt), 0}} {
 		req, opts := meterRequest("claude", true)
 		result, err := NewKiroExecutor(nil).ExecuteStream(t.Context(), auth, req, opts)
 		if err != nil {
@@ -93,8 +96,8 @@ func TestCacheMeterClaudeStream(t *testing.T) {
 			}
 		}
 		read, write, input := delta.Get("cache_read_input_tokens").Int(), delta.Get("cache_creation_input_tokens").Int(), delta.Get("input_tokens").Int()
-		if read != wantRead || read+write+input != prompt {
-			t.Fatalf("turn %d message_delta usage %s, want read %d of prompt %d", turn+1, delta.Raw, wantRead, prompt)
+		if read != want[0] || write != want[1] || read+write+input != prompt {
+			t.Fatalf("turn %d message_delta usage %s, want read %d write %d of prompt %d", turn+1, delta.Raw, want[0], want[1], prompt)
 		}
 	}
 }
@@ -105,7 +108,7 @@ func TestCacheMeterOpenAI(t *testing.T) {
 	auth := builderIDAuth("meter-openai.json")
 	setupMeterTest(t, auth.ID)
 	prompt := wantPrompt()
-	wantRead := int64(float64(prompt) * 0.8)
+	wantRead := ratioOf(prompt)
 
 	req, opts := meterRequest("openai", false)
 	if _, err := NewKiroExecutor(nil).Execute(t.Context(), auth, req, opts); err != nil {

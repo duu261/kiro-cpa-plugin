@@ -12,8 +12,11 @@
 //     A prefix seen within the TTL on the same credential is a cache hit; its
 //     share of the prompt is measured with a local tokenizer and applied to
 //     Kiro's exact total.
-//   - Read is capped at ReadRatio of the total. Everything not read is written,
-//     except one token reported as uncached input.
+//   - A hit reads the cached prefix, capped at ReadRatio of the total; the
+//     rest is uncached input. A miss writes WriteRatio of the total; the rest
+//     is uncached input. A prompt under the cacheable minimum is all input.
+//     This is the shape Kiro resellers bill on (about 12% input either way),
+//     not Anthropic's, where input is only the suffix after the last marker.
 //
 // The split only changes how usage is reported; Kiro is called the same way.
 package cachemeter
@@ -33,8 +36,11 @@ import (
 )
 
 const (
-	// DefaultReadRatio caps simulated cache reads as a share of the prompt.
-	DefaultReadRatio = 0.8
+	// DefaultReadRatio caps simulated cache reads as a share of the prompt on
+	// a hit; DefaultWriteRatio is the share written on a miss. The remainder
+	// of either is billed as uncached input.
+	DefaultReadRatio  = 0.88
+	DefaultWriteRatio = 0.88
 	// TTL matches Anthropic's default ephemeral cache, renewed on every hit.
 	TTL = 5 * time.Minute
 	// minCacheableTokens mirrors Anthropic's minimum cacheable prefix.
@@ -67,8 +73,9 @@ var hiddenPromptTokens = map[string]int64{
 
 // Config controls the meter. The zero value disables it.
 type Config struct {
-	Enabled   bool
-	ReadRatio float64
+	Enabled    bool
+	ReadRatio  float64
+	WriteRatio float64
 }
 
 // Meter holds prefix fingerprints seen within the TTL.
@@ -98,8 +105,11 @@ func Apply(scope, kiroModel string, request []byte, detail usage.Detail) usage.D
 
 // Configure replaces this meter's settings.
 func (m *Meter) Configure(cfg Config) {
-	if math.IsNaN(cfg.ReadRatio) || cfg.ReadRatio <= 0 || cfg.ReadRatio > 1 {
+	if !validRatio(cfg.ReadRatio) {
 		cfg.ReadRatio = DefaultReadRatio
+	}
+	if !validRatio(cfg.WriteRatio) {
+		cfg.WriteRatio = DefaultWriteRatio
 	}
 	m.mu.Lock()
 	m.cfg = cfg
@@ -129,7 +139,7 @@ func (m *Meter) Apply(scope, kiroModel string, request []byte, detail usage.Deta
 	if last := counts[len(counts)-1]; matched >= 0 && last > 0 && counts[matched] >= minCacheableTokens {
 		share = float64(counts[matched]) / float64(last)
 	}
-	read, write, input := Split(total, share, cfg.ReadRatio)
+	read, write, input := Split(total, share, cfg.ReadRatio, cfg.WriteRatio)
 
 	detail.InputTokens = input
 	detail.CacheReadTokens = read
@@ -141,18 +151,23 @@ func (m *Meter) Apply(scope, kiroModel string, request []byte, detail usage.Deta
 
 // Split divides total prompt tokens into cache read, cache write and uncached
 // input. share is the cached prefix's fraction of the prompt (0 on a miss).
-func Split(total int64, share, readRatio float64) (read, write, input int64) {
-	if total <= 0 {
+// A hit never writes and a miss never reads, so read+write+input == total.
+func Split(total int64, share, readRatio, writeRatio float64) (read, write, input int64) {
+	switch {
+	case total <= 0:
 		return 0, 0, 0
+	case total < minCacheableTokens:
+		return 0, 0, total
+	case share > 0:
+		read = int64(math.Floor(math.Min(share, readRatio) * float64(total)))
+		return read, 0, total - read
+	default:
+		write = int64(math.Floor(writeRatio * float64(total)))
+		return 0, write, total - write
 	}
-	share = math.Max(0, math.Min(share, readRatio))
-	read = int64(math.Floor(share * float64(total)))
-	rest := total - read
-	if rest >= 2 {
-		return read, rest - 1, 1
-	}
-	return read, 0, rest
 }
+
+func validRatio(r float64) bool { return !math.IsNaN(r) && r > 0 && r <= 1 }
 
 // lookupAndRecord returns the index of the longest live recorded prefix (or
 // -1) and records every prefix of this request with a fresh TTL.

@@ -431,6 +431,9 @@ func mergePluginSettings(base, update pluginSettingsData) pluginSettingsData {
 	if update.CacheReadRatio != "" {
 		base.CacheReadRatio = update.CacheReadRatio
 	}
+	if update.CacheWriteRatio != "" {
+		base.CacheWriteRatio = update.CacheWriteRatio
+	}
 	return base
 }
 
