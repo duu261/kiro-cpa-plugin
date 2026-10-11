@@ -170,6 +170,14 @@ func (m *Meter) lookupAndRecord(chain [][32]byte) int {
 	if len(m.entries)+len(chain) > maxEntries {
 		m.pruneLocked(now)
 	}
+	// A single request longer than the whole bound keeps only its longest
+	// prefixes; earlier ones would be evicted first anyway.
+	if len(chain) > maxEntries {
+		chain = chain[len(chain)-maxEntries:]
+	}
+	if len(m.entries)+len(chain) > maxEntries {
+		m.entries = make(map[[32]byte]time.Time)
+	}
 	for _, h := range chain {
 		m.entries[h] = now.Add(TTL)
 	}

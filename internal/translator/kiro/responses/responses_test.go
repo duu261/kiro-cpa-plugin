@@ -177,6 +177,26 @@ func TestNonStreamToolCallProducesResponsesFunctionCall(t *testing.T) {
 	}
 }
 
+func TestNonStreamResponsesKeepsMeteredCacheSplit(t *testing.T) {
+	t.Parallel()
+
+	original := []byte(`{"model":"claude-opus-5","input":"hi"}`)
+	request := sdktranslator.TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FromString("kiro"), "claude-opus-5", original, false)
+	claudeResponse := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":5,"cache_read_input_tokens":8000,"cache_creation_input_tokens":1999,"cache_creation":{"ephemeral_5m_input_tokens":1999,"ephemeral_1h_input_tokens":0}}}`)
+
+	output := sdktranslator.TranslateNonStream(context.Background(), sdktranslator.FromString("kiro"), sdktranslator.FormatOpenAIResponse, "claude-opus-5", original, request, claudeResponse, nil)
+	usage := gjson.ParseBytes(output).Get("usage")
+	if got := usage.Get("input_tokens").Int(); got != 10000 {
+		t.Fatalf("input_tokens = %d, want the whole prompt 10000; usage=%s", got, usage.Raw)
+	}
+	if got := usage.Get("input_tokens_details.cached_tokens").Int(); got != 8000 {
+		t.Fatalf("cached_tokens = %d, want 8000; usage=%s", got, usage.Raw)
+	}
+	if got := usage.Get("output_tokens").Int(); got != 5 {
+		t.Fatalf("output_tokens = %d, want 5; usage=%s", got, usage.Raw)
+	}
+}
+
 func TestNonStreamSignedReasoningDoesNotLeakIntoVisibleResponsesText(t *testing.T) {
 	t.Parallel()
 

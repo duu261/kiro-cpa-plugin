@@ -94,10 +94,7 @@ func claudeResponseSSE(response []byte) []byte {
 		"role":    "assistant",
 		"model":   root.Get("model").String(),
 		"content": []any{},
-		"usage": map[string]any{
-			"input_tokens":  root.Get("usage.input_tokens").Int(),
-			"output_tokens": int64(0),
-		},
+		"usage":   claudeUsage(root.Get("usage"), false),
 	}
 	appendFrame(map[string]any{"type": "message_start", "message": message})
 
@@ -149,13 +146,32 @@ func claudeResponseSSE(response []byte) []byte {
 			"stop_reason":   root.Get("stop_reason").String(),
 			"stop_sequence": nil,
 		},
-		"usage": map[string]any{
-			"input_tokens":  root.Get("usage.input_tokens").Int(),
-			"output_tokens": root.Get("usage.output_tokens").Int(),
-		},
+		"usage": claudeUsage(root.Get("usage"), true),
 	})
 	appendFrame(map[string]any{"type": "message_stop"})
 	return bytes.Join(frames, []byte("\n"))
+}
+
+// claudeUsage carries a buffered message's usage into its SSE frames, cache
+// fields included, so a metered turn keeps its cache split on the Responses
+// path. message_start reports no output yet, as a live stream would.
+func claudeUsage(u gjson.Result, withOutput bool) map[string]any {
+	out := map[string]any{
+		"input_tokens":  u.Get("input_tokens").Int(),
+		"output_tokens": int64(0),
+	}
+	if withOutput {
+		out["output_tokens"] = u.Get("output_tokens").Int()
+	}
+	for _, key := range []string{"cache_read_input_tokens", "cache_creation_input_tokens"} {
+		if v := u.Get(key); v.Exists() {
+			out[key] = v.Int()
+		}
+	}
+	if v := u.Get("cache_creation"); v.IsObject() {
+		out["cache_creation"] = v.Value()
+	}
+	return out
 }
 
 func convertResponsesRequestToClaude(model string, body []byte, stream bool) []byte {

@@ -10,7 +10,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -160,14 +159,7 @@ func ConvertKiroStreamToOpenAI(ctx context.Context, model string, originalReques
 	case "ping":
 		// Ping event with usage - optionally emit usage chunk
 		if eventJSON.Get("usage").Exists() {
-			inputTokens := eventJSON.Get("usage.input_tokens").Int()
-			outputTokens := eventJSON.Get("usage.output_tokens").Int()
-			usageInfo := usage.Detail{
-				InputTokens:  inputTokens,
-				OutputTokens: outputTokens,
-				TotalTokens:  inputTokens + outputTokens,
-			}
-			chunk := BuildOpenAISSEUsage(state, usageInfo)
+			chunk := BuildOpenAISSEUsage(state, usageFromClaude(eventJSON.Get("usage")))
 			results = append(results, chunk)
 		}
 	}
